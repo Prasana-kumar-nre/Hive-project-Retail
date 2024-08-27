@@ -1,0 +1,473 @@
+sqoop --options-file /home/hduser/hiveproject/retailorders/custoption --password-file /user/hduser/retailorders/root.password --boundary-query "select min(customerNumber),max(customerNumber) from payments" --query 'select c.customerName,upper(c.customerName),c.contactFirstName,c.contactLastName,c.phone,c.addressline1,c.city,c.state,c.postalCode,c.country,c.salesRepEmployeeNumber,c.creditLimit,p.checkNumber,p.paymentdate,p.amount from customers c inner join payments p on c.customerNumber=p.customerNumber and year(p.paymentdate)=2020 and month(p.paymentdate)=10 where $CONDITIONS' --split-by customerNumber --delete-target-dir --target-dir custdetails/2020-10/ --null-string 'NA' --direct --num-mappers 2 --fields-terminated-by '~' --lines-terminated-by '\n'
+
+sqoop --options-file /home/hduser/retailorders/custoption --password-file /user/hduser/retailorders/root.password --boundary-query " select min(customerNumber),max(customerNumber) from payments " --query ' select c.customerNumber,upper(c.customerName),c.contactFirstName,c.contactLastName,c.phone,c.addressLine1,c.city,c.state,c.postalCode,c.country,c.salesRepEmployeeNumber,c.creditLimit ,p.checknumber,p.paymentdate,p.amount from
+customers c inner join payments p on c.customernumber=p.customernumber and year(p.paymentdate)=2020 and month(p.paymentdate)=10 where $CONDITIONS' --split-by c.customernumber --delete-target-dir --target-dir custdetails/2020-10/ --null-string 'NA' --direct --num-mappers 2 --fields-terminated-by '~' --lines-terminated-by '\n';
+
+
+
+sqoop --options-file /home/hduser/hiveproject/retailorders/ordersoption --password-file /user/hduser/retailorders/root.password --boundary-query "select min(customernumber),max(customernumber) from orders" \
+--query 'select
+o.customernumber,o.ordernumber,o.orderdate,o.shippeddate,o.status,o.comments,od.quantityordered,od.priceeach,od.orderlinenumber,p.productCode,p.productName,p.productLine,p.productScale,p.productVendor,p.productDescription,p.quantityInStock,p.buyPrice,p.MSRP from orders o inner join orderdetails od on o.ordernumber=od.ordernumber inner join products p on od.productcode=p.productcode and year(o.orderdate)=2020 and month(o.orderdate)=10 where $CONDITIONS' \
+--split-by o.customernumber --delete-target-dir --target-dir orderdetails/2020-10 --null-string 'NA' --direct --num-mappers 4 --fields-terminated-by '~' --lines-terminated-by '\n'
+
+create external table orderstg(cno string,orderno string,orderdt date,sdt date,status string,comment string,qordered int,priceeach decimal(10,2),olineno int,pcode string,pname string,pline string,pscale string,pvendor string,pdescription string,qinstock string,buyprice decimal(10,2),msrp decimal(10,2)) row format delimited fields terminated by '~' location '/user/hduser/orderdetails/2020-10/'
+
+curation:
+
+create table custstg(cno int,cname string,cfullname string,address struct<addressline1:string,city:string,state:string,pcode:bigint,country:string,phone:bigint>,climit float,checkno string,checkamt float,paymentdt date)row format delimited fields terminated by '~' stored as textfile;
+
+insert overwrite table custstg select coalesce(cno,0),cname,concat(fname,'',lname),named_struct('addressline1',aline1,'city',city,'state',state,'pcode',pcode,'country',country,'phone',phone),round(climit),concat(REGEXP_EXTRACT(checkno,'[A-Z]+',0),'-',REGEXP_EXTRACT(checkno,'[0-9]+',0)),round(checkamt),coalesce(paymentdt,current_date) from proretail.custdetails_raw where climit>=checkamt;
+
+select coalesce(cno,0),cname,concat(fname,'',lname),named_struct('addressline1',aline1,'city',city,'state',state,'pcode',pcode,'country',country,'phone',phone),round(climit),concat(REGEXP_EXTRACT(checkno,'[A-Z]+',0),'-',REGEXP_EXTRACT(checkno,'[0-9]+',0)),round(checkamt),coalesce(paymentdt,current_date) from proretail.custdetails_raw limit 5;
+
+partition and bucketing customerdetails
+
+create external table cust_dpb(cno int,cname string,cfullname string,address struct<addressline1:string,city:string,state:string,pcode:bigint,country:string,phone:bigint>,climit float,checkno string,checkamt float) partitioned by (paymentdt date) clustered by (cno) into 3 buckets row format delimited fields terminated by '~' collection items terminated by '$' stored as textfile location '/user/hduser/procustorders/cust_dpb';
+
+insert into cust_dpb partition(paymentdt) select cno,cname,cfullname,address,climit,checkno,checkamt,paymentdt from proretail_curated.custstg;
+
+partition and bucketing orderdetials
+
+create external table order_dpb(cno string,orderno string,sdt date,status string,comment string,qordered int,priceeach decimal(10,2),olineno int,pcode string,pname string,pline string,pscale string,pvendor string,pdescription string,qinstock string,buyprice decimal(10,2),msrp decimal(10,2)) partitioned by (ordereddt date) clustered by (cno) into 3 buckets row format delimited fields terminated by '~' collection items by '$' location '/user/hduser/procustorders/order_dpb';
+
+
+select cno,orderno,sdt,status,comment,qordered,priceeach,olineno,pcode,pname,pline,pscale,pvendor,pdescription,qinstock,buyprice,msrp,orderdt from proretail.orderstg;
+
+insert into order_dpb partition(ordereddt) select cno,orderno,sdt,status,comment,qordered,priceeach,olineno,pcode,pname,pline,pscale,pvendor,pdescription,qinstock,buyprice,msrp,orderdt from proretail.orderstg;
+
+---------------------------------------------------------------3-----------------------------------------------------
+
+create external table cust_dp(cno int,cname string,cfullname string,address struct<addressline1:string,city:string,state:string,pcode:bigint,country:string,phone:bigint>,climit float,checkno string,checkamt float) partitioned by (paymentdt date) row format delimited fields terminated by '~' stored as orc location '/user/hduser/procustorders/cust_dp';
+
+insert into cust_dp partition (paymentdt) select cno,cname,cfullname,address,climit,checkno,checkamt,paymentdt from custstg;
+
+
+create external table order_dp(cno string,orderno string,sdt date,status string,comment string,qordered int,priceeach decimal(10,2),olineno int,pcode string,pname string,pline string,pscale string,pvendor string,pdescription string,qinstock string,buyprice decimal(10,2),msrp decimal(10,2)) partitioned by (ordereddt date)row format delimited fields terminated by '~' location '/user/hduser/procustorders/order_dp';
+
+insert into order_dp partition(ordereddt) select cno,orderno,sdt,status,comment,qordered,priceeach,olineno,pcode,pname,pline,pscale,pvendor,pdescription,qinstock,buyprice,msrp,orderdt from proretail.orderstg;
+
+--------------------------------------------------------------4--------------------------------------------------------------------------
+DISCOVERY
+
+create external table copfinal(cno string,cfullname string,phone bigint,climit float,checkno string,checkamt float,orderno string,sdt date,status string,comment string,pcode string,qordered int,priceeach decimal(10,2),olineno int,pname string,pline string,pscal string,pvendor string,pdescription string,qinstock string,buyprice decimal(10,2),msrp decimal(10,2),ordereddt date) partitioned by (paymentdt date) row format delimited fields terminated by '~' stored as textfile location '/user/hduser/procustorders/copfinal';
+
+create index idx_copfinal_phone on table copfinal(phone) as 'org.apache.hadoop.hive.ql.index.compact.CompactIndexHandler' with deferred rebuild;
+
+
+insert into copfinal partition(paymentdt) select cd.cno,cd.cfullname,cd.address.phone,cd.climit,cd.checkno,cd.checkamt,o.orderno,o.sdt,o.status,o.comment,o.pcode,o.qordered,o.priceeach,o.olineno,o.pname,o.pline,o.pscale,o.pvendor,o.pdescription,o.qinstock,
+o.buyprice,o.msrp,o.ordereddt,cd.paymentdt  from proretail_curated.cust_dpb cd inner join proretail_curated.order_dpb o on cd.cno=o.cno;
+
+########################################################################################
+
+
+FRUSTRATION DATA 
+
+
+create external table dim_orate(rid int,orddesc varchar(200),comp_cust varchar(10),siverity int, intent varchar(100)) row format delimited fields terminated by ',' location '/user/hduser/proretailorders/dimorders/';
+
+-----------------------------------
+
+create table cust_nav(cno string,comment string,pagenavi array<string>,pagenavigationidx array<int>) row format delimited fields terminated by ',' collection items terminated by '$';
+
+
+load data local inpath '/home/hduser/hiveproject/retailorders/cust_visits.csv' into table cust_nav;
+
+
+------------------------------------------------
+
+create external table if not exists cust_navigation(cno int, navigation_index int,navigation_pg string) row format delimited fields terminated by ',' location '/user/hduser/procustnavigation';
+
+
+insert into table cust_navigation select cno,idx,navi from proretail.cust_nav lateral view poseexplode(pagenavi) e_data1 as idx,navi;
+
+REVERSE METHOD
+
+select c1.navigation_pg,count(distinct c1.customernumber) custcnt,'last pagevisited' pagevisit
+from retail_discovery.cust_navigation c1 inner join (select a.customernumber,max(a.navigation_index) as
+maxnavigation from retail_discovery.cust_navigation a group by a.customernumber) as c2 on
+(c1.customernumber=c2.customernumber and c1.navigation_index=c2.maxnavigation) group by
+c1.navigation_pg
+union all
+select navigation_pg,count(distinct customernumber) custcnt,'first pagevisited' pagevisit
+from retail_discovery.cust_navigation
+where navigation_index=0
+group by navigation_pg;
+
+a.
+
+select navigation_pg,count(distinct cno) custcnt,'last pagevisited' pagevisit from proretail_discovery.cust_navigation group by navigation_pg;
+
+navigation_pg	custcnt	pagevisit
+about-us	26	last pagevisited
+adv-banner114	2	last pagevisited
+adv-banner117	19	last pagevisited
+billing	5	last pagevisited
+cart	45	last pagevisited
+exit	47	last pagevisited
+google-search	5	last pagevisited
+home	46	last pagevisited
+order	18	last pagevisited
+profile	26	last pagevisited
+
+
+b.
+
+select cno,max(navigation_index) as maxnavigation from proretail_discovery.cust_navigation group by cno limit 5;
+
+cno	maxnavigation
+112	5
+114	5
+124	5
+128	4
+131	3
+
+steop a join b as c
+
+select c1.navigation_pg,count(distinct c1.cno) custcnt,'last pagevisited' pagevisit from proretail_discovery.cust_navigation c1 inner join (select a.cno,max(a.navigation_index) as maxnavigation from proretail_discovery.cust_navigation a group by a.cno) as c2 on (c1.cno=c2.cno and c1.navigation_index=c2.maxnavigation) group by c1.navigation_pg;
+
+
+c1.navigation_pg	custcnt	pagevisit
+exit	46	last pagevisited
+order	1	last pagevisited
+
+d.
+
+select navigation_pg,count(distinct cno) custcnt,'first pagevisited' pasgevisit from proretail_discovery.cust_navigation where navigation_index=0 group by navigation;
+
+navigation_pg	custcnt	pasgevisit
+google-search	5	first pagevisited
+home	46	first pagevisited
+
+step c union d
+
+select c1.navigation_pg,count(distinct c1.cno) custcnt,'last pagevisited' pagevisit from proretail_discovery.cust_navigation c1 inner join (select a.cno,max(a.navigation_index) as maxnavigation from proretail_discovery.cust_navigation a group by a.cno) as c2 on (c1.cno=c2.cno and c1.navigation_index=c2.maxnavigation) group by c1.navigation_pg
+union all
+select navigation_pg,count(distinct cno) custcnt,'first pagevisited' pasgevisit from proretail_discovery.cust_navigation where navigation_index=0 group by navigation_pg;
+
+_u1.navigation_pg	_u1.custcnt	_u1.pagevisit
+google-search	5	first pagevisited
+home	46	first pagevisited
+exit	46	last pagevisited
+order	1	last pagevisited
+
+
+What is the most visited page
+
+select navigation_pg,count(customernumber) as cnt
+from retail_discovery.cust_navigation
+group by navigation_pg
+order by cnt desc
+limit 1;
+
+
+select navigation_pg,count(cno) as cnt from cust_navigation group by navigation_pg order by cnt desc limit 2;
+
+navigation_pg	cnt
+exit	72
+home	63
+
+
+--------------------------------------------------
+create external table retail_discovery.dim_order_rate (rid int,orddesc varchar(200),comp_cust
+varchar(10),siverity int, intent varchar(100))
+row format delimited fields terminated by ','
+location '/user/hduser/retailorders/dimorders/';
+
+dim_orate.rid	dim_orate.orddesc	dim_orate.comp_cust	dim_orate.siverity	dim_orate.intent
+1	complaints	comp	-4	complaint
+2	better offer	comp	-1	offer
+3	disputed	cust	-5	complaint
+4	renegotiate	cust	1	offer
+5	mistake	cust	1	complaint
+6	purchase	cust	1	offer
+7	reevaluate	cust	3	purchases
+8	budgeting issues	cust	-2	marketing
+9	concerned	cust	-4	compliant
+10	interested	cust	5	marketing
+
+5........................
+
+create external table cust_frustration(cno string,total_siverity int,fustration_level string) row format delimited fields terminated by ',' location '/user/hduser/custmartfustration';
+
+///
+insert overwrite table retail_discovery.cust_frustration_level select customernumber,total_siverity,
+case when
+total_siverity between -10 and -3 then 'highly frustrated' 
+when total_siverity between -2 and -1 then 'low frustrated' 
+when total_siverity = 0 then 'neutral' 
+when total_siverity between 1 and 2 then 'happy' 
+when total_siverity between 3 and 10 then 'overwhelming' 
+else 'unknown' end as customer_frustration_level 
+from (
+select customernumber,sum(siverity) as total_siverity from ( select
+o.customernumber,o.comments,r.orddesc,siverity from retailstg.cust_navigation o left outer join
+retail_discovery.dim_order_rate r where o.comments like concat('%',r.orddesc,'%')) temp1
+group by customernumber) temp2;
+///
+
+
+select cno,sum(siverity) as total_siverity from (select o.cno,o.comment,r.orddesc,r.siverity from proretail.cust_nav o left outer join proretail_discovery.dim_orate r where o.comment like concat ('%',r.orddesc,'%')) temp1 group by cno;
+
+cno	total_siverity
+112	-4
+114	0
+124	3
+128	-4
+131	1
+141	0
+144	3
+145	4
+148	4
+151	3
+167	1
+172	3
+173	0
+175	3
+201	-5
+202	4
+205	-2
+216	5
+240	3
+242	5
+276	3
+278	-4
+282	1
+299	0
+319	3
+323	6
+328	3
+339	1
+357	-4
+362	3
+450	3
+452	-5
+456	8
+471	4
+473	3
+475	3
+486	6
+496	-2
+
+select o.cno,o.comment,r.orddesc,r.siverity from proretail.cust_nav o left outer join proretail_discovery.dim_orate r where o.comment like concat ('%',r.orddesc,'%');
+
+o.cno	o.comment	r.orddesc	r.siverity
+112	Customer very concerned about the exact color of the models. There is high risk that he may dispute the order because there is a slight color mismatch	concerned	-4
+114	Can we deliver the new Ford Mustang models by end-of-quarter?	deliver	0
+124	Custom shipping instructions were sent to warehouse	shipping	0
+124	They want to reevaluate their terms agreement with Finance.	reevaluate	3
+128	Customer very concerned about the exact color of the models. There is high risk that he may dispute the order because there is a slight color mismatch	concerned	-4
+131	Difficult to negotiate with customer. We need more marketing materials	Difficult	-3
+131	Order was mistakenly placed. The warehouse noticed the lack of documentation.	mistake	1
+131	They want to reevaluate their terms agreement with Finance.	reevaluate	3
+141	Customer requested that DHL is used for this shipping	shipping	0
+141	Customer requested that DHL is used for this shipping	requested	3
+141	Difficult to negotiate with customer. We need more marketing materials	Difficult	-3
+141	This customer found a better offer from one of our competitors. Will call back to renegotiate.	better offer	-1
+141	This customer found a better offer from one of our competitors. Will call back to renegotiate.	renegotiate	1
+144	Customer requested that ad materials (such as posters pamphlets) be included in the shippment	requested	3
+145	Customer claims container with shipment was damaged during shipping and some items were missing. I am talking to FedEx about this.	shipping	0
+145	Customer claims container with shipment was damaged during shipping and some items were missing. I am talking to FedEx about this.	claims	4
+148	They want to reevaluate their terms agreement with Finance.	reevaluate	3
+148	We need to keep in close contact with their Marketing VP. He is the decision maker for all their purchases.	purchase	1
+151	Customer requested special shippment. The instructions were passed along to the warehouse	requested	3
+167	We need to keep in close contact with their Marketing VP. He is the decision maker for all their purchases.	purchase	1
+172	Customer requested that DHL is used for this shipping	shipping	0
+172	Customer requested that DHL is used for this shipping	requested	3
+173	Can we deliver the new Ford Mustang models by end-of-quarter?	deliver	0
+175	Customer requested that DHL is used for this shipping	shipping	0
+175	Customer requested that DHL is used for this shipping	requested	3
+201	Customer disputed the order and we agreed to cancel it. We must be more cautions with this customer going forward  since they are very hard to please. We must cover the shipping fees.	disputed	-5
+201	Customer disputed the order and we agreed to cancel it. We must be more cautions with this customer going forward  since they are very hard to please. We must cover the shipping fees.	shipping	0
+202	Can we renegotiate this one?	renegotiate	1
+202	Customer requested that FedEx Ground is used for this shipping	shipping	0
+202	Customer requested that FedEx Ground is used for this shipping	requested	3
+205	They want to reevaluate their terms agreement with Finance.	reevaluate	3
+205	This order was disputed and resolved on 2/1/2016. Customer claimed that container with shipment was damaged. FedEx's investigation proved this wrong.	disputed	-5
+216	Customer is interested in buying more Ferrari models	interested	5
+240	Customer requested that ad materials (such as posters pamphlets) be included in the shippment	requested	3
+242	Custom shipping instructions sent to warehouse	shipping	0
+242	Customer is interested in buying more Ferrari models	interested	5
+276	They want to reevaluate their terms agreement with Finance.	reevaluate	3
+278	Customer very concerned about the exact color of the models. There is high risk that he may dispute the order because there is a slight color mismatch	concerned	-4
+282	Can we renegotiate this one?	renegotiate	1
+299	Custom shipping instructions sent to warehouse	shipping	0
+319	Customer requested that FedEx Ground is used for this shipping	shipping	0
+319	Customer requested that FedEx Ground is used for this shipping	requested	3
+323	Customer requested that DHL is used for this shipping	shipping	0
+323	Customer requested that DHL is used for this shipping	requested	3
+323	They want to reevaluate their terms agreement with Finance.	reevaluate	3
+328	Customer requested special shippment. The instructions were passed along to the warehouse	requested	3
+339	We need to keep in close contact with their Marketing VP. He is the decision maker for all their purchases.	purchase	1
+357	Customer heard complaints from their customers and called to cancel this order. Will notify the Sales Manager.	complaints	-4
+362	They want to reevaluate their terms agreement with Finance.	reevaluate	3
+450	Customer requested that DHL is used for this shipping	shipping	0
+450	Customer requested that DHL is used for this shipping	requested	3
+452	This order was disputed but resolved on 11/1/2016 Customer doesn't like the colors and precision of the models.	disputed	-5
+456	Customer is interested in buying more Ferrari models	interested	5
+456	Customer requested that DHL is used for this shipping	shipping	0
+456	Customer requested that DHL is used for this shipping	requested	3
+471	Customer claims the scales of the models don't match what was discussed. I keep all the paperwork though to prove otherwise	claims	4
+473	Customer requested that ad materials (such as posters pamphlets) be included in the shippment	requested	3
+475	Customer requested that FedEx Ground is used for this shipping	shipping	0
+475	Customer requested that FedEx Ground is used for this shipping	requested	3
+486	Customer requested special shippment. The instructions were passed along to the warehouse	requested	3
+486	Customer requested that FedEx Ground is used for this shipping	shipping	0
+486	Customer requested that FedEx Ground is used for this shipping	requested	3
+496	Customer cancelled due to urgent budgeting issues. Must be cautious when dealing with them in the future. Since order shipped already we must discuss who would cover the shipping charges.	budgeting issues	-2
+496	Customer cancelled due to urgent budgeting issues. Must be cautious when dealing with them in the future. Since order shipped already we must discuss who would cover the shipping charges.	shipping	0
+
+
+
+select cno,total_siverity,
+case when total_siverity between -10 and -3 then 'highly frustration'
+when total_siverity between -2 and -1 then 'low frustrated'
+when total_siverity = 0 then 'neutral'
+when total_siverity between 1 and 2 then 'happy'
+when total_siverity between 3 and 10 then 'overwhelming'
+else 'unknown' end as customer_frustion_level
+from ( select cno,sum(siverity) as total_siverity
+from (select o.cno,o.comment,r.orddesc,r.siverity from proretail.cust_nav o left outer join proretail_discovery.dim_orate r where o.comment like concat ('%',r.orddesc,'%')) temp1 group by cno) temp2;
+
+cno	total_siverity	customer_frustion_level
+112	-4	highly frustration
+114	0	neutral
+124	3	overwhelming
+128	-4	highly frustration
+131	1	happy
+141	0	neutral
+144	3	overwhelming
+145	4	overwhelming
+148	4	overwhelming
+151	3	overwhelming
+167	1	happy
+172	3	overwhelming
+173	0	neutral
+175	3	overwhelming
+201	-5	highly frustration
+202	4	overwhelming
+205	-2	low frustrated
+216	5	overwhelming
+240	3	overwhelming
+242	5	overwhelming
+276	3	overwhelming
+278	-4	highly frustration
+282	1	happy
+299	0	neutral
+319	3	overwhelming
+323	6	overwhelming
+328	3	overwhelming
+339	1	happy
+357	-4	highly frustration
+362	3	overwhelming
+450	3	overwhelming
+452	-5	highly frustration
+456	8	overwhelming
+471	4	overwhelming
+473	3	overwhelming
+475	3	overwhelming
+486	6	overwhelming
+496	-2	low frustrated
+
+
+insert overwrite table cust_frustration
+select cno,total_siverity,
+case when total_siverity between -10 and -3 then 'highly frustration'
+when total_siverity between -2 and -1 then 'low frustrated'
+when total_siverity = 0 then 'neutral'
+when total_siverity between 1 and 2 then 'happy'
+when total_siverity between 3 and 10 then 'overwhelming'
+else 'unknown' end as customer_frustion_level
+from ( select cno,sum(siverity) as total_siverity
+from (select o.cno,o.comment,r.orddesc,r.siverity from proretail.cust_nav o left outer join proretail_discovery.dim_orate r where o.comment like concat ('%',r.orddesc,'%')) temp1 group by cno) temp2;
+
+-------------------------------------------------------------------------------------------------------
+
+What is the mostly used words by the customer, hence the business can think about resolving those service
+queries by appointing more man or other resources to reduce those recurring queries to provide better
+customer experience.
+
+
+create table proretail.stopwords (words string);
+
+
+load data local inpath '/home/hduser/hiveproject/retailorders/stopwords' overwrite into table retailstg.stopwords;
+
+
+////
+select splitwords,count(*) as cnt from
+(select customernumber, word as splitwords from retailstg.cust_navigation LATERAL VIEW
+explode(split(comments,' ')) w as word ) as q1
+where upper(splitwords) not in (select upper(words) from retailstg.stopwords)
+group by splitwords
+order by cnt desc;
+////
+
+select count(*) as cnt from stopwords;
+
+cnt
+661
+
+select cno, word as splitwords from proretail.cust_nav lateral view explode(split(comment,' '))w as word;
+ cno	words
+112	Customer
+112	very
+112	concerned
+112	about
+112	the
+112	exact
+112	color
+112	of
+112	the
+112	models.
+112	There
+112	is
+112	high
+112	risk
+112	that
+112	he
+112	may
+112	dispute
+112	the
+112	order
+112	because
+112	there
+112	is
+112	a
+112	slight
+112	color
+112	mismatch
+
+create table mostuse(word string,cnt string);
+
+insert into mostuse
+select  splitwords,count(*) as cnt from (select cno,word as splitwords from proretail.cust_nav lateral view explode(split(comment,' '))w as word) as q1 
+where upper(splitwords) not in (select upper(words) from proretail.stopwords) group by splitwords order by cnt desc;
+
+
+
+########################################
+
+5.SQOOP
+
+mysql -u root -p 
+Root123$
+
+create database customer_reports;
+
+create table customer_frustration_level (cno varchar(200),total_siverity float,frustration_level varchar(100));
+/user/hduser/custmartfustration
+
+/user/hduser/custmartfustration
+
+sqoop export --connect jdbc:mysql://localhost/customers_report --username root --password Root123$ --table customer_frustration_level --export-dir /user/hduser/custmartfustration/
+
+
+create external table cust_frustration(cno string,total_siverity int,fustration_level string) row format delimited fields terminated by ',' location '/user/hduser/custmartfustration';
+
+
+sqoop export --connect jdbc:mysql://localhost/customers_report --username root --password Root123$ --table customer_frustration_level --export-dir /user/hduser/custmartfustration/
+
+
+
+
+
